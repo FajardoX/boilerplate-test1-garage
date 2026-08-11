@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import {
   onSnapshot,
   query,
+  queryEqual,
   type CollectionReference,
   type DocumentData,
   type Query,
@@ -30,14 +31,23 @@ export function useCollection<T extends DocumentData>(
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<Error | null>(null)
 
-  useEffect(() => {
-    const q: Query<T> =
-      queryConstraints.length > 0
-        ? query(collectionRef, ...queryConstraints)
-        : query(collectionRef)
+  // collectionRef/queryConstraints are new object identities every render (Firestore
+  // never memoizes them), so we can't put them straight into a useEffect dependency
+  // array — that would tear down and rebuild the listener on every render, forever
+  // serving stale cache and never reaching the server. Instead we compare the
+  // resulting Query by Firestore's own logical equality and only update state (and
+  // thus the effect dependency) when the query actually changed — the sanctioned
+  // "adjusting state during render" pattern, safe because it's guarded by queryEqual.
+  const nextQuery: Query<T> =
+    queryConstraints.length > 0 ? query(collectionRef, ...queryConstraints) : query(collectionRef)
+  const [stableQuery, setStableQuery] = useState<Query<T>>(nextQuery)
+  if (!queryEqual(stableQuery, nextQuery)) {
+    setStableQuery(nextQuery)
+  }
 
+  useEffect(() => {
     const unsubscribe = onSnapshot(
-      q,
+      stableQuery,
       (snapshot) => {
         setData(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })) as T[])
         setLoading(false)
@@ -49,8 +59,7 @@ export function useCollection<T extends DocumentData>(
     )
 
     return () => unsubscribe()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [collectionRef])
+  }, [stableQuery])
 
   return { data, loading, error }
 }
